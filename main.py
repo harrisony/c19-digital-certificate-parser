@@ -1,5 +1,4 @@
 import pdfplumber
-import pyodbc
 import io
 
 # https://www.servicesaustralia.gov.au/organisations/health-professionals/services/medicare/medicare-online-software-developers/resources/formats-exchange-electronic-data/air-vaccine-code-formats
