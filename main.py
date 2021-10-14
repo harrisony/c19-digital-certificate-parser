@@ -1,7 +1,20 @@
-import pdfplumber
-import io
 import glob
+import io
+import itertools
 import json
+import re
+
+import pdfplumber
+
+try:
+    from PIL import Image
+except ImportError:
+    import Image
+
+import pytesseract
+import fitz  # pymupdf
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract'
 
 # https://www.servicesaustralia.gov.au/organisations/health-professionals/services/medicare/medicare-online-software-developers/resources/formats-exchange-electronic-data/air-vaccine-code-formats
 VACCINES = {'Pfizer Comirnaty': 'COMIRN',
@@ -12,8 +25,17 @@ VACCINES = {'Pfizer Comirnaty': 'COMIRN',
             'Janssen-Cilag COVID Vaccine': 'JANSSE'}
 
 FULLY_VACCINATED_YES = {'This individual has received all required COVID-19 vaccines.',  # digital certificate
-                        'This individual has received all required COVID-19 vaccinations.'}  # IHS
+                        'This individual has received all required COVID-19 vaccinations.'}  # IHS and c19 statement v2021.07.10
 FULLY_VACCINATED_NO = {'This individual has not received all required COVID-19 vaccines.'}  # IHS
+
+COVID_ALL = re.compile(
+    r'This individual has (?P<negative>not )?received all required COVID-19 (vaccines|vaccinations).')
+COVID_DIGITAL_CERTIFICATE = re.compile(
+    r'Vaccinations Dates received(\n*)(.*?) (\d{2} [a-zA-Z]{3} \d{4}), (\d{2} [a-zA-Z]{3} \d{4})')
+
+IHS_STATEMENT = re.compile(r'(\d{2} [a-zA-Z]{3} \d{4}) COVID-19 (.*)')
+IMAGE_MISTAKES = {'COVID-19 Vaccine': 'AstraZeneca Vaxzevria',
+                  'Pfizer Comimaty': 'Pfizer Comirnaty'}
 
 
 def fully_vaccinated(line):
@@ -22,6 +44,40 @@ def fully_vaccinated(line):
     if line in FULLY_VACCINATED_NO:
         return False
     return None
+
+
+def name_fixer(vax_name):
+    vax_name = vax_name.strip()
+    return IMAGE_MISTAKES.get(vax_name, vax_name)
+
+
+def parse_image(img_path, **kwargs):
+    if type(img_path) is Image:
+        img = img_path
+    else:
+        img = Image.open(img_path, **kwargs)
+    fully = None
+    vax = None
+
+    text = pytesseract.image_to_string(img)
+
+    status = COVID_ALL.search(text)
+    if status:
+        fully = status.group(1) is None
+
+    digital_certificate = COVID_DIGITAL_CERTIFICATE.findall(text)
+    if digital_certificate:
+        vax = digital_certificate[0]
+        vax_name = name_fixer(vax[1])
+        vax_code = VACCINES.get(vax_name)
+        vax = [(vax_name, vax_code, vax[2]), (vax_name, vax_code, vax[3])]
+
+    ihs_statement = IHS_STATEMENT.findall(text)
+    if ihs_statement:
+        vax = [(v[0], VACCINES.get(name_fixer(v[1])), name_fixer(v[1])) for v in ihs_statement]
+
+    vrecord = {'required_vaccinations': fully, 'vax': vax}  # don't try
+    return vrecord
 
 
 def parse_cis(pp):
@@ -84,6 +140,33 @@ def parse_ihs(pp):
         return {}
 
 
+def any_except_none(items, return_value=False):
+    if not items:
+        return None
+    a = any(items)
+    if return_value and a:
+        return items
+    elif return_value:
+        return None
+
+    return a
+
+
+def get_images_from_pdf(img_path):
+    doc = fitz.open("pdf", img_path)
+    records = []
+    for page in doc:
+        pix = page.get_pixmap(mat=fitz.Matrix(2, 2))
+        vrecord = parse_image(io.BytesIO(pix.pil_tobytes(format='png')))
+        records.append(vrecord)
+
+    rv = [q['required_vaccinations'] for q in records if q['required_vaccinations'] is not None]
+    vax = list(itertools.chain.from_iterable([q['vax'] for q in records if q['vax'] is not None]))
+
+    return {'required_vaccinations': any_except_none(rv), 'vax': any_except_none(vax, True), 'name': None,
+            'source': 'OCR'}
+
+
 def parse_pdf(f):
     try:
         pp = pdfplumber.open(f)
@@ -94,7 +177,8 @@ def parse_pdf(f):
         contents = contents.split('\n')
         if len(contents) == 1: return {}
     else:
-        return {}
+        print("PARSING IMAGE")
+        return get_images_from_pdf(f)
     if contents[0] == 'COVID-19 digital certificate':
         return parse_cis(pp)
     elif contents[0] == 'Immunisation history statement' or contents[1] == 'Immunisation history statement':
@@ -116,5 +200,7 @@ if __name__ == '__main__':
     jabba = []  # jabba the array ---  http://www.gvhealth.org.au/covid-19/vaxbus/
     pdfs = glob.glob("*.pdf")
     for pdf in pdfs:
-        jabba.append(parse_pdf(pdf))
+        print(pdf)
+        pdf = io.BytesIO(open(pdf, 'rb').read())
+        print(parse_pdf(pdf))
     json.dump(jabba, open('vax.json', 'w'))
