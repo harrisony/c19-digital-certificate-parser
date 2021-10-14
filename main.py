@@ -29,10 +29,11 @@ FULLY_VACCINATED_YES = {'This individual has received all required COVID-19 vacc
 FULLY_VACCINATED_NO = {'This individual has not received all required COVID-19 vaccines.'}  # IHS
 
 COVID_ALL = re.compile(
-    r'This individual has (?P<negative>not )?received all required COVID-19 (vaccines|vaccinations).')
+    r'This individual has (?P<negative>not )?received all required\sCOVID-19 (vaccines|vaccinations).')
 COVID_DIGITAL_CERTIFICATE = re.compile(
     r'Vaccinations Dates received(\n*)(.*?) (\d{2} [a-zA-Z]{3} \d{4}), (\d{2} [a-zA-Z]{3} \d{4})')
 
+COVID_IOS = re.compile(r'(.*?)\s+(\d{2} [a-zA-Z]{3} \d{4}), (\d{2} [a-zA-Z]{3} \d{4})')
 IHS_STATEMENT = re.compile(r'(\d{2} [a-zA-Z]{3} \d{4}) COVID-19 (.*)')
 IMAGE_MISTAKES = {'COVID-19 Vaccine': 'AstraZeneca Vaxzevria',
                   'Pfizer Comimaty': 'Pfizer Comirnaty'}
@@ -43,6 +44,9 @@ def fully_vaccinated(line):
         return True
     if line in FULLY_VACCINATED_NO:
         return False
+    status = COVID_ALL.search(line)
+    if status:
+        return status.group(1) is None
     return None
 
 
@@ -61,9 +65,7 @@ def parse_image(img_path, **kwargs):
 
     text = pytesseract.image_to_string(img)
 
-    status = COVID_ALL.search(text)
-    if status:
-        fully = status.group(1) is None
+    fully = fully_vaccinated(text)
 
     digital_certificate = COVID_DIGITAL_CERTIFICATE.findall(text)
     if digital_certificate:
@@ -76,7 +78,15 @@ def parse_image(img_path, **kwargs):
     if ihs_statement:
         vax = [(v[0], VACCINES.get(name_fixer(v[1])), name_fixer(v[1])) for v in ihs_statement]
 
-    vrecord = {'required_vaccinations': fully, 'vax': vax}  # don't try
+    ios_wallet = COVID_IOS.search(text)
+    if ios_wallet:
+        vax = ios_wallet.groups()
+        vax_name = name_fixer(vax[0])
+        vax_code = VACCINES.get(vax_name)
+        vax = [(vax_name, vax_code, vax[1]), (vax_name, vax_code, vax[2])]
+
+
+    vrecord = {'required_vaccinations': fully, 'vax': vax}
     return vrecord
 
 
@@ -108,7 +118,7 @@ def parse_cis(pp):
 
     vax_code = VACCINES.get(vax_name)
     vrecord = {'name': person_name, 'vax': [(vax_name, vax_code, i.strip()) for i in dates],
-               'required_vaccinations': all_doses}
+               'required_vaccinations': all_doses, 'source': 'CIS'}
     return vrecord
 
 
@@ -132,14 +142,14 @@ def parse_ihs(pp):
 
     all_doses = fully_vaccinated(contents[7])
 
-    vrecord = {'name': person_name, 'vax': vax, 'required_vaccinations': all_doses}
+    vrecord = {'name': person_name, 'vax': vax, 'required_vaccinations': all_doses, 'source': 'IHS'}
     if len(vax):
         return vrecord
     else:
         print("WARNING: No COVID-19 Vaccines given?")
         return {}
 
-
+# TODO: rename
 def any_except_none(items, return_value=False):
     if not items:
         return None
@@ -178,7 +188,11 @@ def parse_pdf(f):
         if len(contents) == 1: return {}
     else:
         print("PARSING IMAGE")
-        return get_images_from_pdf(f)
+        #TODO: Not sure how to handle where you can't parse any data out of the image
+        result = get_images_from_pdf(f)
+        if all(v is None for v in (result['required_vaccinations'], result['vax'])):
+            return {}
+        return result
     if contents[0] == 'COVID-19 digital certificate':
         return parse_cis(pp)
     elif contents[0] == 'Immunisation history statement' or contents[1] == 'Immunisation history statement':
