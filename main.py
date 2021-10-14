@@ -5,6 +5,7 @@ import json
 import re
 
 import pdfplumber
+import rapidfuzz
 
 try:
     from PIL import Image
@@ -20,8 +21,8 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 VACCINES = {'Pfizer Comirnaty': 'COMIRN',
             'AstraZeneca Vaxzevria': 'COVAST',
             'COVID-19 Vaccine AstraZeneca': 'COVAST',
-            # TODO: Haven't encountered these
             'Moderna Spikevax': 'MODERN',
+            # TODO: Haven't encountered these
             'Janssen-Cilag COVID Vaccine': 'JANSSE'}
 
 FULLY_VACCINATED_YES = {'This individual has received all required COVID-19 vaccines.',  # digital certificate
@@ -35,8 +36,6 @@ COVID_DIGITAL_CERTIFICATE = re.compile(
 
 COVID_IOS = re.compile(r'(.*?)\s+(\d{2} [a-zA-Z]{3} \d{4}), (\d{2} [a-zA-Z]{3} \d{4})')
 IHS_STATEMENT = re.compile(r'(\d{2} [a-zA-Z]{3} \d{4}) COVID-19 (.*)')
-IMAGE_MISTAKES = {'COVID-19 Vaccine': 'AstraZeneca Vaxzevria',
-                  'Pfizer Comimaty': 'Pfizer Comirnaty'}
 
 
 def fully_vaccinated(line):
@@ -52,7 +51,13 @@ def fully_vaccinated(line):
 
 def name_fixer(vax_name):
     vax_name = vax_name.strip()
-    return IMAGE_MISTAKES.get(vax_name, vax_name)
+    if vax_name in VACCINES:
+        return vax_name
+    rf = rapidfuzz.process.extractOne(vax_name, VACCINES.keys(), score_cutoff=90)
+    print("RapidFuzz Used '", vax_name, "''", rf)
+    if rf:
+        return rf[0]
+    return vax_name
 
 
 def parse_image(img_path, **kwargs):
@@ -60,23 +65,11 @@ def parse_image(img_path, **kwargs):
         img = img_path
     else:
         img = Image.open(img_path, **kwargs)
-    fully = None
     vax = None
 
     text = pytesseract.image_to_string(img)
 
     fully = fully_vaccinated(text)
-
-    digital_certificate = COVID_DIGITAL_CERTIFICATE.findall(text)
-    if digital_certificate:
-        vax = digital_certificate[0]
-        vax_name = name_fixer(vax[1])
-        vax_code = VACCINES.get(vax_name)
-        vax = [(vax_name, vax_code, vax[2]), (vax_name, vax_code, vax[3])]
-
-    ihs_statement = IHS_STATEMENT.findall(text)
-    if ihs_statement:
-        vax = [(v[0], VACCINES.get(name_fixer(v[1])), name_fixer(v[1])) for v in ihs_statement]
 
     ios_wallet = COVID_IOS.search(text)
     if ios_wallet:
@@ -84,7 +77,17 @@ def parse_image(img_path, **kwargs):
         vax_name = name_fixer(vax[0])
         vax_code = VACCINES.get(vax_name)
         vax = [(vax_name, vax_code, vax[1]), (vax_name, vax_code, vax[2])]
+        print(vax)
 
+
+    ihs_statement = IHS_STATEMENT.findall(text)
+    if ihs_statement:
+        print('ihs certificate found')
+        vax = [(name_fixer(v[1]), VACCINES.get(name_fixer(v[1])), v[0]) for v in ihs_statement]
+
+
+    if vax and any([v[1] is None for v in vax]):
+        print("WARNING: Vax code empty", vax)
 
     vrecord = {'required_vaccinations': fully, 'vax': vax}
     return vrecord
@@ -95,7 +98,7 @@ def parse_cis(pp):
     person_name = contents[3]  # contents[3]: JABBA T HUTT 01 Jan 1990
     person_name = ' '.join(person_name.split(' ')[:-3])  # Strips off the date
 
-    # If you have a long name, thanks to Ev for giving me me his docs
+    # If you have a long name
     if contents[5] == 'Individual Healthcare Identifier (IHI) Document number':
         person_name = person_name + contents[4]
         contents.pop(4)
@@ -166,7 +169,7 @@ def get_images_from_pdf(img_path):
     doc = fitz.open("pdf", img_path)
     records = []
     for page in doc:
-        pix = page.get_pixmap(mat=fitz.Matrix(2, 2))
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         vrecord = parse_image(io.BytesIO(pix.pil_tobytes(format='png')))
         records.append(vrecord)
 
