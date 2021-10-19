@@ -6,6 +6,7 @@ import re
 
 import pdfplumber
 import rapidfuzz
+from pdfminer.pdfparser import PDFSyntaxError
 
 try:
     from PIL import Image
@@ -180,11 +181,17 @@ def get_images_from_pdf(img_path):
             'source': 'OCR'}
 
 
-def parse_pdf(f):
+def parse(f, **kwargs):
     try:
         pp = pdfplumber.open(f)
     except TypeError:  # sometimes, it just dies
         return {}
+    except PDFSyntaxError: # Occurs where an image file is used as input
+        vrecord = parse_image(f)
+        vrecord['name'] = None
+        if all(v is None for v in (vrecord['required_vaccinations'], vrecord['vax'])):
+            return {}
+        return vrecord
     contents = pp.pages[0].extract_text()
     if contents:
         contents = contents.split('\n')
@@ -219,5 +226,5 @@ if __name__ == '__main__':
     for pdf in pdfs:
         print(pdf)
         pdf = io.BytesIO(open(pdf, 'rb').read())
-        print(parse_pdf(pdf))
+        print(parse(pdf))
     json.dump(jabba, open('vax.json', 'w'))
