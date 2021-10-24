@@ -38,6 +38,10 @@ COVID_DIGITAL_CERTIFICATE = re.compile(
 COVID_IOS = re.compile(r'(.*?)\s+(\d{2} [a-zA-Z]{3} \d{4}), (\d{2} [a-zA-Z]{3} \d{4})')
 IHS_STATEMENT = re.compile(r'(\d{2} [a-zA-Z]{3} \d{4}) COVID-19 (.*)')
 
+# Captures:
+# AstraZeneca Vaxzevria 27 Aug 2021, 07 Oct 2021
+# AstraZeneca Vaxzevria 20 Aug 2021
+DIGITAL_CERTIFICATE_VACCINE = re.compile(r'([a-zA-Z ]+) (\d{2} [a-zA-Z]{3} \d{4})(?:, (\d{2} [a-zA-Z]{3} \d{4}))?')
 
 def fully_vaccinated(line):
     if line in FULLY_VACCINATED_YES:
@@ -106,22 +110,25 @@ def parse_cis(pp):
 
     # contents[9]: 'AstraZeneca Vaxzevria 27 Aug 2021, 07 Oct 2021'
     # contents[9]: 'COVID-19 Vaccine  01 Apr 2021, 01 Jul 2021'
-    vax_name = contents[9]
-    dates = ' '.join(vax_name.split(' ')[-6:]).split(',')  # dates: ['01 Apr 2021', ' 01 Jul 2021']
-    vax_name = ' '.join(vax_name.split(' ')[:-6])
+    vaxes = DIGITAL_CERTIFICATE_VACCINE.findall('\n'.join(contents[9:]))
+    dates = list()
+    for line in vaxes:
+        name = line[0].strip()
+        # this occurs if you have an earlier CIS where it was known as 'COVID-19 Vaccine AstraZeneca'
+        # just give them the new name and be donewith it
+        if name == 'Vaccine':
+            print("Assuming AZ", contents[10])
+            name = 'AstraZeneca Vaxzevria'
+        code = VACCINES.get(name)
+        dates.extend([(name, code, d) for d in line[1:] if d])
 
-    # this occurs if you have an earlier CIS where it was known as 'COVID-19 Vaccine AstraZeneca'
-    # just give them the new name and be donewith it
-    if contents[10] == 'AstraZeneca':
-        vax_name = 'AstraZeneca Vaxzevria'
 
-    elif contents[10] != 'Disclaimer':
-        print("WARNING: Disclaimer not in line 10")
+    if contents[10] != 'Disclaimer' and contents[10] != 'AstraZeneca':
+        print("WARNING: Disclaimer not in line 10", contents[10])
 
     all_doses = fully_vaccinated(contents[1])
 
-    vax_code = VACCINES.get(vax_name)
-    vrecord = {'name': person_name, 'vax': [(vax_name, vax_code, i.strip()) for i in dates],
+    vrecord = {'name': person_name, 'vax': dates,
                'required_vaccinations': all_doses, 'source': 'CIS'}
     return vrecord
 
@@ -222,7 +229,7 @@ def debug_page(f):
 
 if __name__ == '__main__':
     jabba = []  # jabba the array ---  http://www.gvhealth.org.au/covid-19/vaxbus/
-    pdfs = glob.glob("*.pdf")
+    pdfs = glob.glob("examples/*.pdf")
     for pdf in pdfs:
         print(pdf)
         pdf = io.BytesIO(open(pdf, 'rb').read())
