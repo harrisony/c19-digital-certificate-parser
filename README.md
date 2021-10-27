@@ -1,6 +1,6 @@
 # Digital Certificate Parser
 
-Given a COVID-19 Digital Certificate or an Individual Health Summary, print out vaccine details and dates.
+Given a COVID-19 Digital Certificate,  Individual Health Summary or an International COVID-19 Vaccination Certificate (VDS-NC), print out vaccine details and dates.
 
     {"name": "JABBA T HUTT",
       "vax": [
@@ -18,3 +18,4 @@ Given a COVID-19 Digital Certificate or an Individual Health Summary, print out 
   - The C19 digital certificate just has the first two doses
 - [ ] doesn't say if a person is considered 'fully vaccinated' if their IHS version is early enough not to include the tick 
 - [ ] code quality is pretty terrible
+- [ ] VDS-NC certificates aren't validated 

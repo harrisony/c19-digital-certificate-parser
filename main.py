@@ -7,6 +7,7 @@ import re
 import pdfplumber
 import rapidfuzz
 from pdfminer.pdfparser import PDFSyntaxError
+from pyzbar import pyzbar
 
 try:
     from PIL import Image
@@ -43,6 +44,21 @@ IHS_STATEMENT = re.compile(r'(\d{2} [a-zA-Z]{3} \d{4}) COVID-19 (.*)')
 # AstraZeneca Vaxzevria 20 Aug 2021
 DIGITAL_CERTIFICATE_VACCINE = re.compile(r'([a-zA-Z ]+) (\d{2} [a-zA-Z]{3} \d{4})(?:, (\d{2} [a-zA-Z]{3} \d{4}))?')
 
+VDS_CODES = ['XM68M6',  # COVID-19 vaccine
+             'XM1NL1',  # COVID-19 vaccine, inactivated virus
+             'XM5DF6',  # COVID-19 vaccine, live attenuated virus
+             'XM9QW8',  # COVID-19 vaccine, non-replicating viral vector
+             'XM0CX4',  # COVID-19 vaccine, replicating viral vector
+             'XM5JC5',  # COVID-19 vaccine, virus protein subunit
+             'XM1J92',  # COVID-19 vaccine, virus-like particle (VLP)
+             'XM6AT1',  # COVID-19 vaccine, DNA based
+             'XM0GQ8',  # COVID-19 vaccine, RNA based
+             ]
+
+VDS_DISEASE = 'RA01'
+
+
+
 def fully_vaccinated(line):
     if line in FULLY_VACCINATED_YES:
         return True
@@ -59,7 +75,7 @@ def name_fixer(vax_name):
     if vax_name in VACCINES:
         return vax_name
     rf = rapidfuzz.process.extractOne(vax_name, VACCINES.keys(), score_cutoff=90)
-    print("RapidFuzz Used '", vax_name, "''", rf)
+    print("RapidFuzz Used '", vax_name, "'", rf)
     if rf:
         return rf[0]
     return vax_name
@@ -160,6 +176,38 @@ def parse_ihs(pp):
         print("WARNING: No COVID-19 Vaccines given?")
         return {}
 
+def parse_vds_nc(f,**kwargs):
+    if type(f) is Image:
+        img = f
+    else:
+        img = Image.open(f, **kwargs)
+    qre = pyzbar.decode(img)
+
+    if not qre:
+        return {}
+    try:
+        qrdata = json.loads(qre[0].data)['data']
+    except ValueError as e:
+        print(e)
+        return {}
+
+    name = qrdata['msg']['pid']['n']
+    vaccines = qrdata['msg']['ve']
+    dates = list()
+    for v in vaccines:
+        if v['des'] not in VDS_CODES and not VDS_DISEASE.startswith(VDS_DISEASE):
+            continue
+        vax_name = v['nam']
+        code = VACCINES.get(vax_name)
+        dates.extend([(vax_name, code, dose['dvc']) for dose in v['vd']])
+    vrecord = {'name': name, 'vax': dates, 'required_vaccinations': None, 'source': 'VDS-NC'}
+    return vrecord
+
+def parse_vds_nc_pdf(f):
+    doc = fitz.open("pdf", f)
+    px = fitz.Pixmap(doc, doc.getPageImageList(0)[0][0])
+    return parse_vds_nc(io.BytesIO(px.getImageData("png")))
+
 # TODO: rename
 def any_except_none(items, return_value=False):
     if not items:
@@ -179,7 +227,10 @@ def get_images_from_pdf(img_path):
     for page in doc:
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         vrecord = parse_image(io.BytesIO(pix.pil_tobytes(format='png')))
+        vr2 = parse_vds_nc(io.BytesIO(pix.pil_tobytes(format='png')))
         records.append(vrecord)
+        if vr2:
+            records.append(vr2)
 
     rv = [q['required_vaccinations'] for q in records if q['required_vaccinations'] is not None]
     vax = list(itertools.chain.from_iterable([q['vax'] for q in records if q['vax'] is not None]))
@@ -196,9 +247,14 @@ def parse(f, **kwargs):
     except PDFSyntaxError: # Occurs where an image file is used as input
         vrecord = parse_image(f)
         vrecord['name'] = None
+        vds_record = parse_vds_nc(f)
+        if vds_record:
+            return vds_record
         if all(v is None for v in (vrecord['required_vaccinations'], vrecord['vax'])):
             return {}
         return vrecord
+    except:
+        return {}
     contents = pp.pages[0].extract_text()
     if contents:
         contents = contents.split('\n')
@@ -214,6 +270,8 @@ def parse(f, **kwargs):
         return parse_cis(pp)
     elif contents[0] == 'Immunisation history statement' or contents[1] == 'Immunisation history statement':
         return parse_ihs(pp)
+    elif contents[0] == 'International COVID-19 Vaccination Certificate':
+        return parse_vds_nc_pdf(f)
     else:
         return {}
 
